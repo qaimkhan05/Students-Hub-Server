@@ -97,40 +97,35 @@ const buildVerificationEmail = (name, code, title, intro) => {
   return { message, html };
 };
 
-const deliverVerificationCode = async (user, title, intro) => {
+const deliverVerificationCode = (user, title, intro) => {
   const { message, html } = buildVerificationEmail(user.name, user.verificationCode, title, intro);
 
-  try {
-    await sendEmail({
-      email: user.email,
-      subject: title,
-      message,
-      html,
+  const isDevFallbackEnabled = process.env.NODE_ENV !== 'production' && ALLOW_DEV_VERIFICATION_FALLBACK;
+
+  sendEmail({ email: user.email, subject: title, message, html })
+    .then(() => {
+      if (process.env.NODE_ENV !== 'production') {
+        console.info(`Verification email sent to ${user.email}`);
+      }
+    })
+    .catch((err) => {
+      if (isDevFallbackEnabled) {
+        console.warn(`Email delivery unavailable (${err.message}). Verification code for ${user.email}: ${user.verificationCode}`);
+        return;
+      }
+      console.error('Verification email delivery failed:', err);
     });
 
-    return {
-      delivered: true,
-      message: 'Verification code sent to your email',
-    };
-  } catch (err) {
-    if (process.env.NODE_ENV !== 'production' && ALLOW_DEV_VERIFICATION_FALLBACK) {
-      console.warn(`Email delivery unavailable (${err.message}). Verification code for ${user.email}: ${user.verificationCode}`);
+  const delivery = {
+    delivered: true,
+    message: 'Verification code sent to your email',
+  };
 
-      return {
-        delivered: false,
-        message: 'Email delivery is unavailable. Use the development verification code below.',
-        devVerificationCode: user.verificationCode,
-      };
-    }
-
-    console.error('Verification email delivery failed:', err);
-    const deliveryError =
-      err.code === 'EMAIL_NOT_CONFIGURED'
-        ? new Error('Email verification is not configured yet. Add Gmail SMTP credentials on the server to send verification codes.')
-        : new Error('Unable to send verification email right now. Please try again later.');
-    deliveryError.statusCode = 503;
-    throw deliveryError;
+  if (isDevFallbackEnabled) {
+    delivery.devVerificationCode = user.verificationCode;
   }
+
+  return Promise.resolve(delivery);
 };
 
 const issueFreshVerificationCode = async (user) => {

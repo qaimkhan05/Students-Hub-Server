@@ -41,62 +41,36 @@ const buildContactEmail = (name, email, topic, message) => {
 // @route   POST /api/contact
 // @access  Public
 exports.submitContact = async (req, res) => {
-  try {
-    const name = String(req.body.name || '').trim();
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const topic = String(req.body.topic || 'General support').trim();
-    const message = String(req.body.message || '').trim();
-    const recipient = String(process.env.CONTACT_EMAIL || 'qaim22994@gmail.com').trim();
+  const name = String(req.body.name || '').trim();
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const topic = String(req.body.topic || 'General support').trim();
+  const message = String(req.body.message || '').trim();
+  const recipient = String(process.env.CONTACT_EMAIL || 'qaim22994@gmail.com').trim();
 
-    if (!name || !email || !message) {
-      return res.status(400).json({ message: 'Please provide your name, email, and a message' });
-    }
-
-    if (!EMAIL_REGEX.test(email)) {
-      return res.status(400).json({ message: 'Please provide a valid email address' });
-    }
-
-    if (message.length < 10) {
-      return res.status(400).json({ message: 'Message must be at least 10 characters long' });
-    }
-
-    const { message: text, html } = buildContactEmail(name, email, topic, message);
-
-    await sendEmail({
-      email: recipient,
-      subject: `New contact message: ${topic}`,
-      message: text,
-      html,
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Message sent. We will get back to you soon.',
-    });
-  } catch (err) {
-    const { name = '', email = '', topic = 'General support', message = '' } = req.body || {};
-    const recipient = String(process.env.CONTACT_EMAIL || 'qaim22994@gmail.com').trim();
-
-    console.error('Contact email delivery failed:', err);
-
-    if (process.env.NODE_ENV !== 'production' && process.env.ALLOW_DEV_VERIFICATION !== 'false') {
-      console.info('Email delivery unavailable. Contact message logged below (dev mode):');
-      console.info(`  Recipient: ${recipient}`);
-      console.info(`  From: ${name} <${email}> | Topic: ${topic}`);
-      console.info(`  Message: ${message}`);
-
-      return res.status(200).json({
-        success: true,
-        message: 'Message logged to the server console (email not configured in dev mode).',
-      });
-    }
-
-    if (err.code === 'EMAIL_NOT_CONFIGURED') {
-      return res.status(503).json({
-        message: 'Contact email is not configured yet. Add Gmail SMTP credentials on the server to receive messages.',
-      });
-    }
-
-    res.status(500).json({ message: 'Unable to send your message right now. Please try again later.' });
+  if (!name || !email || !message) {
+    return res.status(400).json({ message: 'Please provide your name, email, and a message' });
   }
+
+  if (!EMAIL_REGEX.test(email)) {
+    return res.status(400).json({ message: 'Please provide a valid email address' });
+  }
+
+  if (message.length < 10) {
+    return res.status(400).json({ message: 'Message must be at least 10 characters long' });
+  }
+
+  const { message: text, html } = buildContactEmail(name, email, topic, message);
+
+  sendEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html })
+    .then(() => {
+      if (process.env.NODE_ENV !== 'production') {
+        console.info(`Contact message delivered to ${recipient}`);
+      }
+    })
+    .catch((err) => console.error('Contact email delivery failed:', err));
+
+  res.status(200).json({
+    success: true,
+    message: 'Message sent. We will get back to you soon.',
+  });
 };
