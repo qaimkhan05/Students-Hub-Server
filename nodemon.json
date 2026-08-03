@@ -1,0 +1,13 @@
+{
+  "restartable": "rs",
+  "ignore": [
+    "node_modules/**/node_modules",
+    ".git",
+    "*.log"
+  ],
+  "verbose": true,
+  "execMap": {
+    "js": "node"
+  },
+  "ext": "js,json"
+}
