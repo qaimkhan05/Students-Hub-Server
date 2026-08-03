@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const cloudinary = require('cloudinary').v2;
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 
@@ -21,6 +22,8 @@ const MIME_EXTENSION_MAP = {
   'application/x-7z-compressed': '.7z',
   'text/plain': '.txt',
 };
+
+const CLOUDINARY_URL_PATTERN = /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/v\d+\/(.+)$/i;
 
 const sanitizeBaseName = (fileName = 'file') => {
   const normalized = fileName
@@ -58,7 +61,54 @@ const inferExtension = (fileName, mimeType) => {
   return MIME_EXTENSION_MAP[mimeType] || '';
 };
 
-const saveBase64Upload = ({
+const getCloudinaryConfig = () => {
+  const config = {
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  };
+
+  if (!config.cloud_name || !config.api_key || !config.api_secret) {
+    const error = new Error('Cloudinary is not configured on the server');
+    error.code = 'CLOUDINARY_NOT_CONFIGURED';
+    throw error;
+  }
+
+  return config;
+};
+
+const uploadBufferToCloudinary = (fileBuffer, { mimeType, uploadName, extension, subdirectories }) =>
+  new Promise((resolve, reject) => {
+    try {
+      cloudinary.config(getCloudinaryConfig());
+
+      const folder = ['studenthub', ...subdirectories].join('/');
+      const isImage = mimeType.startsWith('image/');
+      const baseName = sanitizeBaseName(path.basename(uploadName, extension));
+      const uniqueName = `${Date.now()}-${crypto.randomUUID()}-${baseName}`;
+      const publicId = isImage ? uniqueName : `${uniqueName}${extension}`;
+
+      cloudinary.uploader.upload_stream(
+        {
+          folder,
+          public_id: publicId,
+          resource_type: isImage ? 'image' : 'raw',
+          overwrite: true,
+        },
+        (error, result) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(result);
+        }
+      ).end(fileBuffer);
+    } catch (err) {
+      reject(err);
+    }
+  });
+
+const saveBase64Upload = async ({
   upload,
   maxBytes,
   label,
@@ -93,22 +143,34 @@ const saveBase64Upload = ({
     throw new Error(`${label} must be ${Math.floor(maxBytes / (1024 * 1024))} MB or smaller`);
   }
 
-  const absoluteDirectory = path.join(UPLOAD_ROOT, ...subdirectories);
-  fs.mkdirSync(absoluteDirectory, { recursive: true });
-
-  const baseName = sanitizeBaseName(path.basename(uploadName, extension));
-  const generatedName = `${Date.now()}-${crypto.randomUUID()}-${baseName}${extension}`;
-  const absolutePath = path.join(absoluteDirectory, generatedName);
-
-  fs.writeFileSync(absolutePath, fileBuffer);
-
-  return `/uploads/${[...subdirectories, generatedName].join('/')}`;
+  return uploadBufferToCloudinary(fileBuffer, { mimeType, uploadName, extension, subdirectories });
 };
 
 const toStoredUrl = (relativePath) => relativePath;
 
 const removeUploadedFile = (fileUrl) => {
   if (!fileUrl || typeof fileUrl !== 'string') {
+    return;
+  }
+
+  const cloudinaryMatch = fileUrl.match(CLOUDINARY_URL_PATTERN);
+
+  if (cloudinaryMatch) {
+    const resourceType = cloudinaryMatch[1];
+    let publicId = cloudinaryMatch[2];
+
+    if (resourceType === 'image') {
+      publicId = publicId.replace(/\.[a-z0-9]+$/i, '');
+    }
+
+    try {
+      cloudinary.config(getCloudinaryConfig());
+      cloudinary.uploader
+        .destroy(publicId, { resource_type: resourceType })
+        .catch((err) => console.error('Cloudinary cleanup failed:', err.message));
+    } catch (err) {
+      console.error('Cloudinary cleanup skipped:', err.message);
+    }
     return;
   }
 

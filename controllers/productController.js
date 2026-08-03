@@ -118,7 +118,7 @@ const cleanupUploads = (fileUrls = []) => {
   [...new Set(fileUrls.filter(Boolean))].forEach((fileUrl) => removeUploadedFile(fileUrl));
 };
 
-const prepareProductPayload = (req, body, existingProduct = null) => {
+const prepareProductPayload = async (req, body, existingProduct = null) => {
   const payload = {
     title: body.title,
     description: body.description,
@@ -132,7 +132,7 @@ const prepareProductPayload = (req, body, existingProduct = null) => {
   const previousUploadUrls = [];
 
   if (body.thumbnailUpload) {
-    const relativeThumbnailPath = saveBase64Upload({
+    const relativeThumbnailPath = await saveBase64Upload({
       upload: body.thumbnailUpload,
       maxBytes: THUMBNAIL_MAX_BYTES,
       label: 'Thumbnail image',
@@ -149,7 +149,7 @@ const prepareProductPayload = (req, body, existingProduct = null) => {
   }
 
   if (body.courseUpload) {
-    const relativeFilePath = saveBase64Upload({
+    const relativeFilePath = await saveBase64Upload({
       upload: body.courseUpload,
       maxBytes: PRODUCT_FILE_MAX_BYTES,
       label: 'Course file',
@@ -206,7 +206,7 @@ exports.createProduct = async (req, res) => {
   let savedUploadUrls = [];
 
   try {
-    const prepared = prepareProductPayload(req, req.body);
+    const prepared = await prepareProductPayload(req, req.body);
     savedUploadUrls = prepared.savedUploadUrls;
 
     const product = await Product.create(prepared.payload);
@@ -230,7 +230,7 @@ exports.updateProduct = async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    const prepared = prepareProductPayload(req, req.body, existingProduct);
+    const prepared = await prepareProductPayload(req, req.body, existingProduct);
     savedUploadUrls = prepared.savedUploadUrls;
 
     const product = await Product.findByIdAndUpdate(req.params.id, prepared.payload, {
