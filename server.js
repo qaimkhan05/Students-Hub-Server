@@ -1,6 +1,10 @@
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 
+if (!globalThis.crypto) {
+  globalThis.crypto = require('crypto').webcrypto;
+}
+
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
