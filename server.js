@@ -1,5 +1,4 @@
 const dns = require('dns');
-dns.setServers(['8.8.8.8', '1.1.1.1']);
 dns.setDefaultResultOrder('ipv4first');
 
 if (!globalThis.crypto) {
@@ -19,6 +18,12 @@ const validateEnv = require('./utils/validateEnv');
 dotenv.config();
 
 validateEnv();
+
+console.error(
+  `[env] EMAIL_USER=${process.env.EMAIL_USER ? 'set' : 'MISSING'}, ` +
+    `EMAIL_PASS=${process.env.EMAIL_PASS ? 'set' : 'MISSING'}, ` +
+    `CONTACT_EMAIL=${process.env.CONTACT_EMAIL ? 'set' : 'MISSING'}`
+);
 
 // Connect to database
 connectDB();
