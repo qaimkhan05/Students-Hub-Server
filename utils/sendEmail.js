@@ -1,4 +1,16 @@
+const dns = require('dns');
 const nodemailer = require('nodemailer');
+
+const SMTP_HOST = 'smtp.gmail.com';
+
+const resolveIpv4Host = (hostname) =>
+  new Promise((resolve) => {
+    const resolver = new dns.Resolver({ timeout: 5000, tries: 2 });
+    resolver.setServers(['8.8.8.8', '1.1.1.1']);
+    resolver.resolve4(hostname, (err, addresses) => {
+      resolve(!err && addresses && addresses.length ? addresses[0] : null);
+    });
+  });
 
 const sendEmail = async (options) => {
   const emailUser = String(process.env.EMAIL_USER || '').trim();
@@ -11,8 +23,11 @@ const sendEmail = async (options) => {
     throw error;
   }
 
+  const smtpHost = (await resolveIpv4Host(SMTP_HOST)) || SMTP_HOST;
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
+    host: smtpHost,
+    servername: SMTP_HOST,
     port: 587,
     secure: false,
     auth: {
