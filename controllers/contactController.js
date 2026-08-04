@@ -61,16 +61,22 @@ exports.submitContact = async (req, res) => {
 
   const { message: text, html } = buildContactEmail(name, email, topic, message);
 
-  sendEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html })
-    .then(() => {
-      if (process.env.NODE_ENV !== 'production') {
-        console.info(`Contact message delivered to ${recipient}`);
-      }
-    })
-    .catch((err) => console.error('Contact email delivery failed:', err));
+  try {
+    await sendEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html });
 
-  res.status(200).json({
-    success: true,
-    message: 'Message sent. We will get back to you soon.',
-  });
+    if (process.env.NODE_ENV !== 'production') {
+      console.info(`Contact message delivered to ${recipient}`);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Message sent. We will get back to you soon.',
+    });
+  } catch (err) {
+    console.error('Contact email delivery failed:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Email delivery failed. Please try again later.',
+    });
+  }
 };

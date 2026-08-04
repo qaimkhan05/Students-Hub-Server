@@ -97,24 +97,24 @@ const buildVerificationEmail = (name, code, title, intro) => {
   return { message, html };
 };
 
-const deliverVerificationCode = (user, title, intro) => {
+const deliverVerificationCode = async (user, title, intro) => {
   const { message, html } = buildVerificationEmail(user.name, user.verificationCode, title, intro);
-
   const isDevFallbackEnabled = process.env.NODE_ENV !== 'production' && ALLOW_DEV_VERIFICATION_FALLBACK;
 
-  sendEmail({ email: user.email, subject: title, message, html })
-    .then(() => {
-      if (process.env.NODE_ENV !== 'production') {
-        console.info(`Verification email sent to ${user.email}`);
-      }
-    })
-    .catch((err) => {
-      if (isDevFallbackEnabled) {
-        console.warn(`Email delivery unavailable (${err.message}). Verification code for ${user.email}: ${user.verificationCode}`);
-        return;
-      }
+  try {
+    await sendEmail({ email: user.email, subject: title, message, html });
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.info(`Verification email sent to ${user.email}`);
+    }
+  } catch (err) {
+    if (isDevFallbackEnabled) {
+      console.warn(`Email delivery unavailable (${err.message}). Verification code for ${user.email}: ${user.verificationCode}`);
+    } else {
       console.error('Verification email delivery failed:', err);
-    });
+      throw new Error('Unable to send verification email right now. Please try again later.');
+    }
+  }
 
   const delivery = {
     delivered: true,
@@ -125,7 +125,7 @@ const deliverVerificationCode = (user, title, intro) => {
     delivery.devVerificationCode = user.verificationCode;
   }
 
-  return Promise.resolve(delivery);
+  return delivery;
 };
 
 const issueFreshVerificationCode = async (user) => {

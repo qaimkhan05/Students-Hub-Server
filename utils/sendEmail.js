@@ -1,116 +1,141 @@
-const dns = require('dns');
-const net = require('net');
 const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
 const SMTP_HOST = 'smtp.gmail.com';
-const FALLBACK_IPV4 = ['64.233.184.109', '142.250.145.109'];
+const SMTP_PORT = 587;
+const SMTP_SECURE = false;
+const DEFAULT_FROM_NAME = 'Student Hub Pakistan';
 
-const log = (...args) => console.error('[SMTP]', ...args);
+const log = (...args) => console.error('[MAIL]', ...args);
 
-const isIpv4 = (value) => net.isIP(value) === 4;
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 
-const resolveIpv4Candidates = async () => {
-  const candidates = [];
-  const add = (value) => {
-    const candidate = String(value || '').trim();
-    if (isIpv4(candidate) && !candidates.includes(candidate)) {
-      candidates.push(candidate);
-    }
-  };
-
-  const methods = [
-    {
-      label: 'dns.lookup (system DNS)',
-      run: () => dns.promises.lookup(SMTP_HOST, { family: 4, all: true }),
+const createSmtpTransporter = (emailUser, emailPass) =>
+  nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    requireTLS: true,
+    auth: {
+      user: emailUser,
+      pass: emailPass,
     },
-    {
-      label: 'fresh Resolver.resolve4 (system DNS)',
-      run: () =>
-        new Promise((resolve, reject) => {
-          const resolver = new dns.Resolver({ timeout: 5000, tries: 2 });
-          resolver.resolve4(SMTP_HOST, (err, addresses) =>
-            err ? reject(err) : resolve(addresses)
-          );
-        }),
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000,
+    socketOptions: {
+      family: 4,
     },
-  ];
+    tls: {
+      servername: SMTP_HOST,
+      rejectUnauthorized: false,
+    },
+  });
 
-  for (const method of methods) {
-    try {
-      const result = await method.run();
-      const addresses = (result || []).map((item) =>
-        typeof item === 'string' ? item : item.address
-      );
-      addresses.forEach(add);
-      if (addresses.length) {
-        log(`${method.label}:`, addresses.join(', '));
-      }
-    } catch (err) {
-      log(`${method.label} failed (${err.code || err.message})`);
-    }
+const sendWithResend = async ({ to, subject, text, html, replyTo, from }) => {
+  const apiKey = String(process.env.RESEND_API_KEY || '').trim();
+  const sender = String(process.env.RESEND_FROM_EMAIL || '').trim();
+
+  if (!apiKey || !sender) {
+    const error = new Error('RESEND_API_KEY or RESEND_FROM_EMAIL is not configured');
+    error.code = 'RESEND_NOT_CONFIGURED';
+    throw error;
   }
 
-  FALLBACK_IPV4.forEach(add);
-  log('IPv4 candidates:', candidates.length ? candidates.join(', ') : '(none)');
-  return candidates;
+  const resend = new Resend(apiKey);
+  const response = await resend.emails.send({
+    from,
+    to: [to],
+    reply_to: replyTo,
+    subject,
+    text,
+    html,
+  });
+
+  if (response?.error) {
+    const error = new Error(response.error.message || 'Resend delivery failed');
+    error.code = response.error.name || 'RESEND_SEND_FAILED';
+    throw error;
+  }
+
+  log(`SUCCESS via Resend (${response?.data?.id || 'unknown'})`);
+  return response;
 };
 
-const sendEmail = async (options) => {
-  const emailUser = String(process.env.EMAIL_USER || '').trim();
-  // Gmail displays app passwords with spaces; spaces are only formatting.
-  const emailPass = String(process.env.EMAIL_PASS || '').replace(/\s/g, '');
-  const fromName = String(process.env.FROM_NAME || 'Student Hub Pakistan').trim();
-
+const sendWithSmtp = async ({ to, subject, text, html, replyTo, fromName, emailUser, emailPass }) => {
   if (!emailUser || !emailPass) {
-    log('EMAIL_USER or EMAIL_PASS is not set on this server');
-    const error = new Error('Email service is not configured');
+    const error = new Error('EMAIL_USER or EMAIL_PASS is not set on this server');
     error.code = 'EMAIL_NOT_CONFIGURED';
     throw error;
   }
 
-  const candidates = await resolveIpv4Candidates();
-  if (!candidates.length) {
-    log('no IPv4 candidates resolved - falling back to hostname');
-    candidates.push(SMTP_HOST);
+  const transporter = createSmtpTransporter(emailUser, emailPass);
+
+  try {
+    await transporter.verify();
+    log('SMTP transporter verified');
+  } catch (verifyError) {
+    log(`SMTP transporter verification failed: ${verifyError.code || verifyError.message}`);
+    throw verifyError;
   }
 
   const message = {
     from: `${fromName} <${emailUser}>`,
-    replyTo: emailUser,
-    to: options.email,
+    replyTo,
+    to,
+    subject,
+    text,
+    html,
+  };
+
+  try {
+    const info = await transporter.sendMail(message);
+    log(`SUCCESS via ${SMTP_HOST} (${info.messageId})`);
+    return info;
+  } catch (err) {
+    log(`Gmail SMTP send failed: ${err.code || err.message}`);
+    throw err;
+  }
+};
+
+const sendEmail = async (options) => {
+  const emailUser = String(process.env.EMAIL_USER || '').trim();
+  const emailPass = String(process.env.EMAIL_PASS || '').replace(/\s/g, '');
+  const fromName = String(process.env.FROM_NAME || DEFAULT_FROM_NAME).trim();
+  const replyTo = String(process.env.EMAIL_USER || '').trim();
+  const fallbackFrom = `${fromName} <${emailUser}>`;
+  const to = normalizeEmail(options.email);
+
+  const resendFrom = String(process.env.RESEND_FROM_EMAIL || '').trim();
+  const resendEnabled = Boolean(process.env.RESEND_API_KEY && resendFrom);
+
+  if (resendEnabled) {
+    try {
+      return await sendWithResend({
+        to,
+        subject: options.subject,
+        text: options.message,
+        html: options.html,
+        replyTo,
+        from: resendFrom,
+      });
+    } catch (err) {
+      log(`Resend failed, falling back to SMTP: ${err.code || err.message}`);
+    }
+  } else {
+    log('Resend not configured; using Gmail SMTP fallback');
+  }
+
+  return sendWithSmtp({
+    to,
     subject: options.subject,
     text: options.message,
     html: options.html,
-  };
-
-  let lastError = null;
-
-  for (const host of candidates) {
-    const transporter = nodemailer.createTransport({
-      host,
-      servername: SMTP_HOST,
-      port: 587,
-      secure: false,
-      auth: {
-        user: emailUser,
-        pass: emailPass,
-      },
-      connectionTimeout: 8000,
-      greetingTimeout: 8000,
-      socketTimeout: 15000,
-    });
-
-    try {
-      const info = await transporter.sendMail(message);
-      log(`SUCCESS via ${host} (${info.messageId})`);
-      return;
-    } catch (err) {
-      lastError = err;
-      log(`attempt ${host} failed: ${err.code || err.message}`);
-    }
-  }
-
-  throw lastError || new Error('SMTP delivery failed');
+    replyTo,
+    fromName,
+    emailUser,
+    emailPass,
+  });
 };
 
 module.exports = sendEmail;

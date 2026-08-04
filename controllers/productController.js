@@ -234,7 +234,7 @@ exports.updateProduct = async (req, res) => {
     savedUploadUrls = prepared.savedUploadUrls;
 
     const product = await Product.findByIdAndUpdate(req.params.id, prepared.payload, {
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
     });
 

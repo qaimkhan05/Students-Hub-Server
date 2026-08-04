@@ -22,7 +22,9 @@ validateEnv();
 console.error(
   `[env] EMAIL_USER=${process.env.EMAIL_USER ? 'set' : 'MISSING'}, ` +
     `EMAIL_PASS=${process.env.EMAIL_PASS ? 'set' : 'MISSING'}, ` +
-    `CONTACT_EMAIL=${process.env.CONTACT_EMAIL ? 'set' : 'MISSING'}`
+    `CONTACT_EMAIL=${process.env.CONTACT_EMAIL ? 'set' : 'MISSING'}, ` +
+    `RESEND_API_KEY=${process.env.RESEND_API_KEY ? 'set' : 'MISSING'}, ` +
+    `RESEND_FROM_EMAIL=${process.env.RESEND_FROM_EMAIL ? 'set' : 'MISSING'}`
 );
 
 // Connect to database
