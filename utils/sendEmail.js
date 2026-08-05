@@ -1,71 +1,91 @@
 const dns = require('dns');
+const net = require('net');
 const nodemailer = require('nodemailer');
 const { Resend } = require('resend');
 
 const SMTP_HOST = 'smtp.gmail.com';
 const SMTP_PORT = 587;
+const SMTP_ALTERNATE_PORT = 465;
 const SMTP_SECURE = false;
 const DEFAULT_FROM_NAME = 'Student Hub Pakistan';
+const CONNECTION_TIMEOUT_MS = 6000;
+const SMTP_DEADLINE_MS = 20000;
 
 const log = (...args) => console.error('[MAIL]', ...args);
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 
-// Resolve smtp.gmail.com to an IPv4 literal and pin it as the connect host.
-// Nodemailer's built-in resolver mixes IPv4 and IPv6 and picks randomly;
-// on Railway IPv6 egress is unavailable (ENETUNREACH/ETIMEDOUT), so forcing
-// IPv4 keeps Gmail SMTP reachable. STARTTLS still uses smtp.gmail.com as the
-// TLS servername, so the certificate check stays valid.
+// Resolve smtp.gmail.com to IPv4 literals and pin them as the connect host.
+// Nodemailer's built-in resolver mixes IPv4 and IPv6 and picks randomly; on
+// Railway IPv6 egress is unavailable (ENETUNREACH/ETIMEDOUT), so forcing IPv4
+// keeps Gmail SMTP reachable. STARTTLS still uses smtp.gmail.com as the TLS
+// servername, so the certificate check stays valid.
 const resolveSmtpIpv4 = () =>
   new Promise((resolve) => {
     let done = false;
-    const finish = (address) => {
+    const finish = (addresses) => {
       if (!done) {
         done = true;
-        resolve(address || null);
+        resolve(addresses || []);
       }
     };
 
     try {
-      const resolver = new dns.Resolver({ timeout: 5000, tries: 2 });
+      const resolver = new dns.Resolver({ timeout: 4000, tries: 1 });
       resolver.setServers(['8.8.8.8', '1.1.1.1']);
       resolver.resolve4(SMTP_HOST, (err, addresses) => {
         if (!err && addresses && addresses.length) {
-          finish(addresses[0]);
+          finish(addresses.slice(0, 4));
         } else {
-          finish(null);
+          finish([]);
         }
       });
     } catch {
-      finish(null);
+      finish([]);
     }
   });
 
-let smtpHostPromise;
+let smtpHostsPromise;
 
-const getSmtpHost = async () => {
-  if (!smtpHostPromise) {
-    smtpHostPromise = resolveSmtpIpv4().then((ipv4) => ipv4 || SMTP_HOST);
+// Returns candidate connect hosts (IPv4 literals). Falls back to the hostname
+// when resolution fails so nodemailer can try its own resolver. Failures are
+// not cached so a later, successful resolution is still picked up.
+const getSmtpHosts = async () => {
+  if (smtpHostsPromise) {
+    const hosts = await smtpHostsPromise;
+    if (hosts.length) {
+      return hosts;
+    }
+    smtpHostsPromise = undefined;
   }
 
-  return smtpHostPromise;
+  const hosts = await resolveSmtpIpv4();
+
+  if (!hosts.length) {
+    smtpHostsPromise = Promise.resolve([]);
+    return [SMTP_HOST];
+  }
+
+  smtpHostsPromise = Promise.resolve(hosts);
+  return hosts;
 };
 
-const createSmtpTransporter = async (emailUser, emailPass) => {
-  const host = await getSmtpHost();
+const createTransport = (host, port) => {
+  const { emailUser, emailPass } = getEmailConfig();
+  const secure = port === 465;
 
   return nodemailer.createTransport({
     host,
+    port,
+    secure,
+    requireTLS: !secure,
     servername: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    requireTLS: true,
     auth: {
       user: emailUser,
       pass: emailPass,
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
+    connectionTimeout: CONNECTION_TIMEOUT_MS,
+    greetingTimeout: CONNECTION_TIMEOUT_MS,
     socketTimeout: 20000,
     tls: {
       servername: SMTP_HOST,
@@ -73,6 +93,38 @@ const createSmtpTransporter = async (emailUser, emailPass) => {
     },
   });
 };
+
+// Quick TCP pre-flight: if smtp.gmail.com is unreachable from this server we
+// bail out in seconds instead of letting every port/IP combo time out.
+const canReachGmail = () =>
+  new Promise(async (resolve) => {
+    try {
+      const [hosts] = await Promise.all([getSmtpHosts()]);
+      const hostsToProbe = hosts.length ? hosts : [SMTP_HOST];
+      const ipv4 = hostsToProbe[0];
+
+      const socket = net.connect({
+        host: ipv4,
+        port: SMTP_PORT,
+        timeout: CONNECTION_TIMEOUT_MS,
+      });
+
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 
 const getEmailConfig = () => {
   const emailUser = String(process.env.EMAIL_USER || '').trim();
@@ -129,15 +181,17 @@ const sendWithSmtp = async ({ to, subject, text, html, replyTo }) => {
     throw error;
   }
 
-  const transporter = await createSmtpTransporter(emailUser, emailPass);
-
-  try {
-    await transporter.verify();
-    log('SMTP transporter verified');
-  } catch (verifyError) {
-    log(`SMTP transporter verification failed (continuing anyway): ${verifyError.code || verifyError.message}`);
+  if (!(await canReachGmail())) {
+    const error = new Error(
+      'Gmail SMTP (smtp.gmail.com) is not reachable from this server. ' +
+        'Your hosting provider may be blocking outbound connections to Gmail. ' +
+        'Configure RESEND_API_KEY / RESEND_FROM_EMAIL to enable email delivery.'
+    );
+    error.code = 'SMTP_UNREACHABLE';
+    throw error;
   }
 
+  const hosts = (await getSmtpHosts()).length ? await getSmtpHosts() : [SMTP_HOST];
   const message = {
     from: `${fromName} <${emailUser}>`,
     replyTo: replyTo || emailUser,
@@ -147,24 +201,31 @@ const sendWithSmtp = async ({ to, subject, text, html, replyTo }) => {
     html,
   };
 
-  let lastError = null;
+  const deadline = Date.now() + SMTP_DEADLINE_MS;
+  const errors = [];
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const info = await transporter.sendMail(message);
-      log(`SUCCESS via ${SMTP_HOST} (${info.messageId})`);
-      return { provider: 'gmail-smtp', messageId: info.messageId };
-    } catch (err) {
-      lastError = err;
-      log(`Gmail SMTP send attempt ${attempt} failed: ${err.code || err.message}`);
-      if (attempt === 1 && err.responseCode && err.responseCode < 500) {
+  for (const host of hosts.slice(0, 2)) {
+    for (const port of [SMTP_PORT, SMTP_ALTERNATE_PORT]) {
+      if (Date.now() > deadline) {
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const transporter = createTransport(host, port);
+
+      try {
+        const info = await transporter.sendMail(message);
+        log(`SUCCESS via ${host}:${port} (${info.messageId})`);
+        return { provider: 'gmail-smtp', messageId: info.messageId };
+      } catch (err) {
+        errors.push(`${host}:${port} -> ${err.code || err.message}`);
+        log(`Gmail SMTP send via ${host}:${port} failed: ${err.code || err.message}`);
+      }
     }
   }
 
-  throw lastError;
+  const error = new Error(`Gmail SMTP delivery failed: ${errors.join(' | ')}`);
+  error.code = 'SMTP_SEND_FAILED';
+  throw error;
 };
 
 const sendEmail = async (options) => {

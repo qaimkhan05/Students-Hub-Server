@@ -15,10 +15,8 @@ const persistContactMessage = (entry) => {
   }
 };
 
-const sendContactEmail = (options) => {
-  sendEmail(options).catch((err) => {
-    console.error('Contact email delivery failed:', err.message);
-  });
+const sendContactEmail = async (options) => {
+  await sendEmail(options);
 };
 
 const escapeHtml = (value = '') =>
@@ -83,7 +81,15 @@ exports.submitContact = async (req, res) => {
 
   persistContactMessage({ at: new Date().toISOString(), name, email, topic, message });
 
-  sendContactEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html });
+  try {
+    await sendContactEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html });
+  } catch (err) {
+    console.error('Contact email delivery failed:', err.message);
+    return res.status(502).json({
+      success: false,
+      message: `We could not deliver this message to ${recipient} right now. Please try again later or email us directly.`,
+    });
+  }
 
   return res.status(200).json({
     success: true,
