@@ -24,7 +24,9 @@ console.error(
     `EMAIL_PASS=${process.env.EMAIL_PASS ? 'set' : 'MISSING'}, ` +
     `CONTACT_EMAIL=${process.env.CONTACT_EMAIL ? 'set' : 'MISSING'}, ` +
     `RESEND_API_KEY=${process.env.RESEND_API_KEY ? 'set' : 'MISSING'}, ` +
-    `RESEND_FROM_EMAIL=${process.env.RESEND_FROM_EMAIL ? 'set' : 'MISSING'}`
+    `RESEND_FROM_EMAIL=${process.env.RESEND_FROM_EMAIL ? 'set' : 'MISSING'}, ` +
+    `BREVO_API_KEY=${process.env.BREVO_API_KEY ? 'set' : 'MISSING'}, ` +
+    `BREVO_FROM_EMAIL=${process.env.BREVO_FROM_EMAIL ? 'set' : 'MISSING'}`
 );
 
 // Connect to database (does not crash the server if it is temporarily unavailable)
