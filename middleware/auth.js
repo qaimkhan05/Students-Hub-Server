@@ -22,11 +22,15 @@ exports.protect = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    req.user = await User.findById(decoded.id);
+    req.user = await User.findById(decoded.id)
+      .select('name email role isVerified profile')
+      .lean({ virtuals: true });
 
     if (!req.user) {
       return res.status(401).json({ message: 'User not found' });
     }
+
+    req.user.id = req.user._id.toString();
 
     next();
   } catch (err) {

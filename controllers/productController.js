@@ -2,6 +2,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
+const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const {
@@ -13,8 +14,11 @@ const {
 const THUMBNAIL_EXTENSIONS = new Set(['.gif', '.jpg', '.jpeg', '.png', '.webp']);
 const PRODUCT_FILE_EXTENSIONS = new Set([
   '.7z',
+  '.azw',
   '.doc',
   '.docx',
+  '.epub',
+  '.mobi',
   '.pdf',
   '.ppt',
   '.pptx',
@@ -24,10 +28,14 @@ const PRODUCT_FILE_EXTENSIONS = new Set([
   '.zip',
 ]);
 const THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024;
-const PRODUCT_FILE_MAX_BYTES = 100 * 1024 * 1024;
+const PRODUCT_FILE_MAX_BYTES = 950 * 1024 * 1024;
+const BOOK_FILE_MAX_BYTES = 950 * 1024 * 1024;
+const FILE_STORAGE = 'local';
 const UPLOAD_ROOT = path.resolve(__dirname, '..', 'uploads');
 const SAMPLES_ROOT = path.resolve(__dirname, '..', 'samples');
 const LOCAL_PREFIXES = ['/uploads/', '/samples/'];
+
+const isInvalidObjectId = (id) => !mongoose.isValidObjectId(id);
 
 const getDownloadName = (product, parsedUrl) => {
   let fileName = parsedUrl.pathname.split('/').pop() || '';
@@ -148,13 +156,31 @@ const prepareProductPayload = async (req, body, existingProduct = null) => {
     }
   }
 
+  const isBook = body.category === 'Books';
+  const fileSettings = isBook
+    ? {
+        maxBytes: BOOK_FILE_MAX_BYTES,
+        label: 'Book file',
+        allowedExtensions: PRODUCT_FILE_EXTENSIONS,
+        subdirectories: ['books', 'files'],
+        storage: FILE_STORAGE,
+      }
+    : {
+        maxBytes: PRODUCT_FILE_MAX_BYTES,
+        label: 'Course file',
+        allowedExtensions: PRODUCT_FILE_EXTENSIONS,
+        subdirectories: ['products', 'files'],
+        storage: FILE_STORAGE,
+      };
+
   if (body.courseUpload) {
     const relativeFilePath = await saveBase64Upload({
       upload: body.courseUpload,
-      maxBytes: PRODUCT_FILE_MAX_BYTES,
-      label: 'Course file',
-      allowedExtensions: PRODUCT_FILE_EXTENSIONS,
-      subdirectories: ['products', 'files'],
+      maxBytes: fileSettings.maxBytes,
+      label: fileSettings.label,
+      allowedExtensions: fileSettings.allowedExtensions,
+      subdirectories: fileSettings.subdirectories,
+      storage: fileSettings.storage,
     });
 
     payload.fileUrl = toStoredUrl(relativeFilePath);
@@ -177,7 +203,7 @@ const prepareProductPayload = async (req, body, existingProduct = null) => {
 // @access  Public
 exports.getProducts = async (req, res) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 });
+    const products = await Product.find().sort({ createdAt: -1 }).lean();
     res.status(200).json({ success: true, count: products.length, data: products });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -189,7 +215,11 @@ exports.getProducts = async (req, res) => {
 // @access  Public
 exports.getProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    if (isInvalidObjectId(req.params.id)) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const product = await Product.findById(req.params.id).lean();
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -224,6 +254,10 @@ exports.updateProduct = async (req, res) => {
   let savedUploadUrls = [];
 
   try {
+    if (isInvalidObjectId(req.params.id)) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
     const existingProduct = await Product.findById(req.params.id);
 
     if (!existingProduct) {
@@ -252,6 +286,10 @@ exports.updateProduct = async (req, res) => {
 // @access  Private (Admin)
 exports.deleteProduct = async (req, res) => {
   try {
+    if (isInvalidObjectId(req.params.id)) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
     const product = await Product.findById(req.params.id);
 
     if (!product) {
@@ -272,11 +310,14 @@ exports.deleteProduct = async (req, res) => {
 // @access  Private
 exports.checkout = async (req, res) => {
   try {
-    const productIds = Array.isArray(req.body.productIds) ? [...new Set(req.body.productIds)] : [];
+    const rawIds = Array.isArray(req.body.productIds) ? req.body.productIds : [];
+    const validIds = rawIds.filter((id) => mongoose.isValidObjectId(id));
 
-    if (!productIds.length) {
-      return res.status(400).json({ message: 'Please select at least one product' });
+    if (!validIds.length || validIds.length !== rawIds.length) {
+      return res.status(400).json({ message: 'Please select valid products' });
     }
+
+    const productIds = [...new Set(validIds)];
 
     const products = await Product.find({ _id: { $in: productIds } });
 
@@ -291,7 +332,7 @@ exports.checkout = async (req, res) => {
       products: productIds,
       totalAmount,
       status: 'Completed', // For simulation
-      transactionId: `TXN-${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+      transactionId: `TXN-${Math.random().toString(36).slice(2, 11).toUpperCase()}`,
     });
 
     // Update sales count for products
@@ -311,7 +352,11 @@ exports.checkout = async (req, res) => {
 // @access  Private
 exports.downloadProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).select('title fileUrl');
+    if (isInvalidObjectId(req.params.id)) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const product = await Product.findById(req.params.id).select('title fileUrl').lean();
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }

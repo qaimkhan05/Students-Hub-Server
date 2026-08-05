@@ -32,11 +32,27 @@ const createSmtpTransporter = (emailUser, emailPass) =>
     },
   });
 
-const sendWithResend = async ({ to, subject, text, html, replyTo, from }) => {
-  const apiKey = String(process.env.RESEND_API_KEY || '').trim();
-  const sender = String(process.env.RESEND_FROM_EMAIL || '').trim();
+const getEmailConfig = () => {
+  const emailUser = String(process.env.EMAIL_USER || '').trim();
+  const emailPass = String(process.env.EMAIL_PASS || '').trim();
+  const fromName = String(process.env.FROM_NAME || DEFAULT_FROM_NAME).trim();
+  const resendFrom = String(process.env.RESEND_FROM_EMAIL || '').trim();
 
-  if (!apiKey || !sender) {
+  return {
+    emailUser,
+    emailPass,
+    fromName,
+    resendApiKey: String(process.env.RESEND_API_KEY || '').trim(),
+    resendFrom,
+    replyTo: emailUser,
+    resendEnabled: Boolean(process.env.RESEND_API_KEY && resendFrom),
+  };
+};
+
+const sendWithResend = async ({ to, subject, text, html, replyTo }) => {
+  const { resendApiKey: apiKey, resendFrom } = getEmailConfig();
+
+  if (!apiKey || !resendFrom) {
     const error = new Error('RESEND_API_KEY or RESEND_FROM_EMAIL is not configured');
     error.code = 'RESEND_NOT_CONFIGURED';
     throw error;
@@ -44,25 +60,27 @@ const sendWithResend = async ({ to, subject, text, html, replyTo, from }) => {
 
   const resend = new Resend(apiKey);
   const response = await resend.emails.send({
-    from,
+    from: resendFrom,
     to: [to],
-    reply_to: replyTo,
+    reply_to: replyTo || undefined,
     subject,
     text,
     html,
   });
 
   if (response?.error) {
-    const error = new Error(response.error.message || 'Resend delivery failed');
+    const error = new Error(`Resend delivery failed: ${response.error.message}`);
     error.code = response.error.name || 'RESEND_SEND_FAILED';
     throw error;
   }
 
   log(`SUCCESS via Resend (${response?.data?.id || 'unknown'})`);
-  return response;
+  return { provider: 'resend', messageId: response?.data?.id || null };
 };
 
-const sendWithSmtp = async ({ to, subject, text, html, replyTo, fromName, emailUser, emailPass }) => {
+const sendWithSmtp = async ({ to, subject, text, html, replyTo }) => {
+  const { emailUser, emailPass, fromName } = getEmailConfig();
+
   if (!emailUser || !emailPass) {
     const error = new Error('EMAIL_USER or EMAIL_PASS is not set on this server');
     error.code = 'EMAIL_NOT_CONFIGURED';
@@ -75,39 +93,42 @@ const sendWithSmtp = async ({ to, subject, text, html, replyTo, fromName, emailU
     await transporter.verify();
     log('SMTP transporter verified');
   } catch (verifyError) {
-    log(`SMTP transporter verification failed: ${verifyError.code || verifyError.message}`);
-    throw verifyError;
+    log(`SMTP transporter verification failed (continuing anyway): ${verifyError.code || verifyError.message}`);
   }
 
   const message = {
     from: `${fromName} <${emailUser}>`,
-    replyTo,
+    replyTo: replyTo || emailUser,
     to,
     subject,
     text,
     html,
   };
 
-  try {
-    const info = await transporter.sendMail(message);
-    log(`SUCCESS via ${SMTP_HOST} (${info.messageId})`);
-    return info;
-  } catch (err) {
-    log(`Gmail SMTP send failed: ${err.code || err.message}`);
-    throw err;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const info = await transporter.sendMail(message);
+      log(`SUCCESS via ${SMTP_HOST} (${info.messageId})`);
+      return { provider: 'gmail-smtp', messageId: info.messageId };
+    } catch (err) {
+      lastError = err;
+      log(`Gmail SMTP send attempt ${attempt} failed: ${err.code || err.message}`);
+      if (attempt === 1 && err.responseCode && err.responseCode < 500) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
   }
+
+  throw lastError;
 };
 
 const sendEmail = async (options) => {
-  const emailUser = String(process.env.EMAIL_USER || '').trim();
-  const emailPass = String(process.env.EMAIL_PASS || '').replace(/\s/g, '');
-  const fromName = String(process.env.FROM_NAME || DEFAULT_FROM_NAME).trim();
-  const replyTo = String(process.env.EMAIL_USER || '').trim();
-  const fallbackFrom = `${fromName} <${emailUser}>`;
+  const { resendEnabled } = getEmailConfig();
   const to = normalizeEmail(options.email);
-
-  const resendFrom = String(process.env.RESEND_FROM_EMAIL || '').trim();
-  const resendEnabled = Boolean(process.env.RESEND_API_KEY && resendFrom);
+  const errors = [];
 
   if (resendEnabled) {
     try {
@@ -116,26 +137,37 @@ const sendEmail = async (options) => {
         subject: options.subject,
         text: options.message,
         html: options.html,
-        replyTo,
-        from: resendFrom,
+        replyTo: options.replyTo,
       });
     } catch (err) {
-      log(`Resend failed, falling back to SMTP: ${err.code || err.message}`);
+      errors.push({ provider: 'resend', message: err.message });
+      log(`Resend failed, falling back to SMTP: ${err.message}`);
     }
   } else {
     log('Resend not configured; using Gmail SMTP fallback');
   }
 
-  return sendWithSmtp({
-    to,
-    subject: options.subject,
-    text: options.message,
-    html: options.html,
-    replyTo,
-    fromName,
-    emailUser,
-    emailPass,
-  });
+  try {
+    return await sendWithSmtp({
+      to,
+      subject: options.subject,
+      text: options.message,
+      html: options.html,
+      replyTo: options.replyTo,
+    });
+  } catch (err) {
+    errors.push({ provider: 'gmail-smtp', message: err.message });
+    const wrapped = new Error(
+      `Email delivery failed. ${errors.map((e) => `${e.provider}: ${e.message}`).join(' | ')}`
+    );
+    wrapped.providerErrors = errors;
+    throw wrapped;
+  }
 };
 
 module.exports = sendEmail;
+module.exports.sendWithResend = sendWithResend;
+module.exports.sendWithSmtp = sendWithSmtp;
+module.exports.getEmailConfig = getEmailConfig;
+module.exports.SMTP_HOST = SMTP_HOST;
+module.exports.SMTP_PORT = SMTP_PORT;

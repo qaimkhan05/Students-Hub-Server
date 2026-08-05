@@ -41,8 +41,9 @@ exports.getStats = async (req, res) => {
           .sort({ createdAt: -1 })
           .limit(5)
           .populate('user', 'name email')
-          .populate('products', 'title'),
-        User.find().sort({ createdAt: -1 }).limit(5),
+          .populate('products', 'title')
+          .lean(),
+        User.find().sort({ createdAt: -1 }).limit(5).lean(),
       ]);
 
     const usersByRoleDocs = await User.aggregate([
@@ -75,7 +76,7 @@ exports.getStats = async (req, res) => {
 // @access  Private (Admin)
 exports.getUsers = async (req, res) => {
   try {
-    const users = await User.find().sort({ createdAt: -1 });
+    const users = await User.find().sort({ createdAt: -1 }).lean();
     res.status(200).json({ success: true, data: users.map(serializeUser) });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -153,6 +154,21 @@ exports.deleteUser = async (req, res) => {
       return res.status(403).json({ message: 'The owner account cannot be deleted' });
     }
 
+    const orders = await Order.find({ user: user._id }).select('products');
+    const productIds = orders.flatMap((order) => order.products || []);
+
+    if (productIds.length) {
+      const products = await Product.find({ _id: { $in: productIds } }).select('_id salesCount');
+      await Promise.all(
+        products.map((product) =>
+          Product.updateOne(
+            { _id: product._id },
+            { salesCount: Math.max(0, (product.salesCount || 0) - 1) }
+          )
+        )
+      );
+    }
+
     await Order.deleteMany({ user: user._id });
     await user.deleteOne();
 
@@ -170,7 +186,8 @@ exports.getOrders = async (req, res) => {
     const orders = await Order.find()
       .sort({ createdAt: -1 })
       .populate('user', 'name email')
-      .populate('products', 'title category price');
+      .populate('products', 'title category price')
+      .lean();
     res.status(200).json({ success: true, data: orders });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -193,7 +210,8 @@ exports.updateOrderStatus = async (req, res) => {
       { returnDocument: 'after', runValidators: true }
     )
       .populate('user', 'name email')
-      .populate('products', 'title category price');
+      .populate('products', 'title category price')
+      .lean();
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });

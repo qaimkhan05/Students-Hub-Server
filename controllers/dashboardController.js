@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Order = require('../models/Order');
+const Product = require('../models/Product');
 
 const profileFieldsByRole = {
   student: ['name', 'headline', 'bio', 'skills', 'resumeUrl', 'location'],
@@ -34,7 +35,8 @@ exports.getDashboard = async (req, res) => {
 
     const orders = await Order.find({ user: user._id })
       .sort({ createdAt: -1 })
-      .populate('products', 'title category price fileUrl thumbnailUrl');
+      .populate('products', 'title category price fileUrl thumbnailUrl')
+      .lean();
 
     res.status(200).json({
       success: true,
@@ -48,6 +50,40 @@ exports.getDashboard = async (req, res) => {
         orders,
       },
     });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// @desc    Remove an item from the user's library
+// @route   DELETE /api/dashboard/library/:orderId/:productId
+// @access  Private
+exports.removeFromLibrary = async (req, res) => {
+  try {
+    const { orderId, productId } = req.params;
+
+    const order = await Order.findOne({
+      _id: orderId,
+      user: req.user.id,
+      status: 'Completed',
+      products: productId,
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Item not found in your library' });
+    }
+
+    order.products.pull(productId);
+
+    if (order.products.length === 0) {
+      await order.deleteOne();
+    } else {
+      const remainingProducts = await Product.find({ _id: { $in: order.products } });
+      order.totalAmount = remainingProducts.reduce((sum, product) => sum + product.price, 0);
+      await order.save();
+    }
+
+    res.status(200).json({ success: true, message: 'Item removed from your library' });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

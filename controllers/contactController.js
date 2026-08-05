@@ -1,6 +1,25 @@
+const fs = require('fs');
+const path = require('path');
 const sendEmail = require('../utils/sendEmail');
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const CONTACT_LOG_PATH = path.resolve(__dirname, '..', 'data', 'contact-messages.log');
+
+const persistContactMessage = (entry) => {
+  try {
+    fs.mkdirSync(path.dirname(CONTACT_LOG_PATH), { recursive: true });
+    fs.appendFileSync(CONTACT_LOG_PATH, JSON.stringify(entry) + '\n', 'utf8');
+  } catch (err) {
+    console.error('Could not persist contact message:', err);
+  }
+};
+
+const sendContactEmail = (options) => {
+  sendEmail(options).catch((err) => {
+    console.error('Contact email delivery failed:', err.message);
+  });
+};
 
 const escapeHtml = (value = '') =>
   String(value).replace(/[&<>"']/g, (character) => ({
@@ -16,6 +35,7 @@ const buildContactEmail = (name, email, topic, message) => {
   const safeEmail = escapeHtml(email);
   const safeTopic = escapeHtml(topic);
   const safeMessage = escapeHtml(message);
+  const text = `New contact form submission\n\nName: ${name}\nEmail: ${email}\nTopic: ${topic}\n\n${message}\n\nReply to the visitor directly at their email above.`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 18px; background: #ffffff;">
       <div style="margin-bottom: 20px;">
@@ -34,7 +54,7 @@ const buildContactEmail = (name, email, topic, message) => {
     </div>
   `;
 
-  return { message, html };
+  return { message: text, html };
 };
 
 // @desc    Submit a contact form message
@@ -61,22 +81,12 @@ exports.submitContact = async (req, res) => {
 
   const { message: text, html } = buildContactEmail(name, email, topic, message);
 
-  try {
-    await sendEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html });
+  persistContactMessage({ at: new Date().toISOString(), name, email, topic, message });
 
-    if (process.env.NODE_ENV !== 'production') {
-      console.info(`Contact message delivered to ${recipient}`);
-    }
+  sendContactEmail({ email: recipient, subject: `New contact message: ${topic}`, message: text, html });
 
-    return res.status(200).json({
-      success: true,
-      message: 'Message sent. We will get back to you soon.',
-    });
-  } catch (err) {
-    console.error('Contact email delivery failed:', err);
-    return res.status(500).json({
-      success: false,
-      message: 'Email delivery failed. Please try again later.',
-    });
-  }
+  return res.status(200).json({
+    success: true,
+    message: 'Message sent. We will get back to you soon.',
+  });
 };

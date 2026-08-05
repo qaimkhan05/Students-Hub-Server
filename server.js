@@ -27,17 +27,19 @@ console.error(
     `RESEND_FROM_EMAIL=${process.env.RESEND_FROM_EMAIL ? 'set' : 'MISSING'}`
 );
 
-// Connect to database
-connectDB();
+// Connect to database (does not crash the server if it is temporarily unavailable)
+connectDB().catch((err) => {
+  console.error(`[db] ${err.message}`);
+});
 
 const app = express();
 
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-// Body parser
-app.use(express.json({ limit: '150mb' }));
-app.use(express.urlencoded({ extended: true, limit: '150mb' }));
+// Body parser. The limit is sized so a 950MB base64 upload (~1.27GB) fits comfortably.
+app.use(express.json({ limit: '1400mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1400mb' }));
 
 const allowedOrigins = (process.env.CLIENT_ORIGIN || '')
   .split(',')
@@ -80,6 +82,7 @@ app.use('/api/products', require('./routes/products'));
 app.use('/api/contact', require('./routes/contact'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/email', require('./routes/email'));
 
 app.get('/', (req, res) => {
   res.json({ message: 'Welcome to Student Hub Pakistan API' });
@@ -97,9 +100,14 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 if (require.main === module) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
   });
+
+  // Allow large book uploads to finish even on slow connections.
+  server.requestTimeout = 60 * 60 * 1000;
+  server.headersTimeout = 60 * 60 * 1000;
+  server.timeout = 60 * 60 * 1000;
 }
 
 module.exports = app;

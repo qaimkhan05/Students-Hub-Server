@@ -77,6 +77,17 @@ const getCloudinaryConfig = () => {
   return config;
 };
 
+const saveBufferToLocal = (fileBuffer, { extension, subdirectories }) => {
+  const fileName = `${Date.now()}-${crypto.randomUUID()}${extension}`;
+  const relativePath = [...subdirectories, fileName];
+  const targetDirectory = path.join(UPLOAD_ROOT, ...subdirectories);
+
+  fs.mkdirSync(targetDirectory, { recursive: true });
+  fs.writeFileSync(path.join(targetDirectory, fileName), fileBuffer);
+
+  return `/${['uploads', ...relativePath].join('/')}`;
+};
+
 const uploadBufferToCloudinary = (fileBuffer, { mimeType, uploadName, extension, subdirectories }) =>
   new Promise((resolve, reject) => {
     try {
@@ -100,7 +111,7 @@ const uploadBufferToCloudinary = (fileBuffer, { mimeType, uploadName, extension,
             reject(error);
             return;
           }
-          resolve(result);
+          resolve(result.secure_url || result.url);
         }
       ).end(fileBuffer);
     } catch (err) {
@@ -114,6 +125,7 @@ const saveBase64Upload = async ({
   label,
   allowedExtensions,
   subdirectories,
+  storage = 'cloudinary',
 }) => {
   if (!upload) {
     throw new Error(`${label} is missing`);
@@ -141,6 +153,10 @@ const saveBase64Upload = async ({
 
   if (fileBuffer.length > maxBytes) {
     throw new Error(`${label} must be ${Math.floor(maxBytes / (1024 * 1024))} MB or smaller`);
+  }
+
+  if (storage === 'local') {
+    return saveBufferToLocal(fileBuffer, { extension, subdirectories });
   }
 
   return uploadBufferToCloudinary(fileBuffer, { mimeType, uploadName, extension, subdirectories });
