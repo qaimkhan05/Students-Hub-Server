@@ -131,6 +131,8 @@ const getEmailConfig = () => {
   const emailPass = String(process.env.EMAIL_PASS || '').trim();
   const fromName = String(process.env.FROM_NAME || DEFAULT_FROM_NAME).trim();
   const resendFrom = String(process.env.RESEND_FROM_EMAIL || '').trim();
+  const brevoApiKey = String(process.env.BREVO_API_KEY || '').trim();
+  const brevoFromEmail = String(process.env.BREVO_FROM_EMAIL || '').trim();
 
   return {
     emailUser,
@@ -138,9 +140,55 @@ const getEmailConfig = () => {
     fromName,
     resendApiKey: String(process.env.RESEND_API_KEY || '').trim(),
     resendFrom,
+    brevoApiKey,
+    brevoFromEmail,
+    brevoFromName: String(process.env.BREVO_FROM_NAME || fromName || DEFAULT_FROM_NAME).trim(),
     replyTo: emailUser,
     resendEnabled: Boolean(process.env.RESEND_API_KEY && resendFrom),
+    brevoEnabled: Boolean(brevoApiKey && brevoFromEmail),
   };
+};
+
+const sendWithBrevo = async ({ to, subject, text, html, replyTo }) => {
+  const { brevoApiKey: apiKey, brevoFromEmail, brevoFromName } = getEmailConfig();
+
+  if (!apiKey || !brevoFromEmail) {
+    const error = new Error('BREVO_API_KEY or BREVO_FROM_EMAIL is not configured');
+    error.code = 'BREVO_NOT_CONFIGURED';
+    throw error;
+  }
+
+  const payload = {
+    sender: { name: brevoFromName, email: brevoFromEmail },
+    to: [{ email: to }],
+    subject,
+    textContent: text,
+    htmlContent: html,
+  };
+
+  if (replyTo) {
+    payload.replyTo = { email: replyTo };
+  }
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'api-key': apiKey,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    const error = new Error(`Brevo API error (${response.status}): ${body.slice(0, 300)}`);
+    error.code = 'BREVO_SEND_FAILED';
+    throw error;
+  }
+
+  log(`SUCCESS via Brevo (HTTP ${response.status})`);
+  return { provider: 'brevo', messageId: null };
 };
 
 const sendWithResend = async ({ to, subject, text, html, replyTo }) => {
@@ -229,7 +277,7 @@ const sendWithSmtp = async ({ to, subject, text, html, replyTo }) => {
 };
 
 const sendEmail = async (options) => {
-  const { resendEnabled } = getEmailConfig();
+  const { resendEnabled, brevoEnabled } = getEmailConfig();
   const to = normalizeEmail(options.email);
   const errors = [];
 
@@ -244,10 +292,27 @@ const sendEmail = async (options) => {
       });
     } catch (err) {
       errors.push({ provider: 'resend', message: err.message });
-      log(`Resend failed, falling back to SMTP: ${err.message}`);
+      log(`Resend failed, falling back to Brevo: ${err.message}`);
     }
   } else {
-    log('Resend not configured; using Gmail SMTP fallback');
+    log('Resend not configured; trying Brevo');
+  }
+
+  if (brevoEnabled) {
+    try {
+      return await sendWithBrevo({
+        to,
+        subject: options.subject,
+        text: options.message,
+        html: options.html,
+        replyTo: options.replyTo,
+      });
+    } catch (err) {
+      errors.push({ provider: 'brevo', message: err.message });
+      log(`Brevo failed, falling back to SMTP: ${err.message}`);
+    }
+  } else {
+    log('Brevo not configured; using Gmail SMTP fallback');
   }
 
   try {
@@ -270,6 +335,7 @@ const sendEmail = async (options) => {
 
 module.exports = sendEmail;
 module.exports.sendWithResend = sendWithResend;
+module.exports.sendWithBrevo = sendWithBrevo;
 module.exports.sendWithSmtp = sendWithSmtp;
 module.exports.getEmailConfig = getEmailConfig;
 module.exports.SMTP_HOST = SMTP_HOST;

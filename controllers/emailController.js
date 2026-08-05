@@ -1,5 +1,6 @@
 const {
   sendWithResend,
+  sendWithBrevo,
   sendWithSmtp,
   getEmailConfig,
   SMTP_HOST,
@@ -48,6 +49,14 @@ exports.health = async (req, res) => {
           ? 'Resend is enabled. The fromEmail domain must be verified in Resend, otherwise sends fail.'
           : 'Disabled (set RESEND_API_KEY and RESEND_FROM_EMAIL to enable).',
       },
+      brevo: {
+        enabled: cfg.brevoEnabled,
+        apiKey: maskSecret(cfg.brevoApiKey),
+        fromEmail: cfg.brevoFromEmail || '(not set)',
+        note: cfg.brevoEnabled
+          ? 'Brevo is enabled. BREVO_FROM_EMAIL must be a verified sender in Brevo, otherwise sends fail.'
+          : 'Disabled (set BREVO_API_KEY and BREVO_FROM_EMAIL to enable).',
+      },
       smtp: {
         configured: Boolean(cfg.emailUser && cfg.emailPass),
         user: maskEmail(cfg.emailUser),
@@ -88,6 +97,17 @@ exports.test = async (req, res) => {
     }
   } else {
     results.resend = { skipped: true, reason: 'RESEND_API_KEY / RESEND_FROM_EMAIL not set' };
+  }
+
+  if (cfg.brevoEnabled) {
+    try {
+      const result = await sendWithBrevo({ to: recipient, subject, text, html });
+      results.brevo = { success: true, messageId: result.messageId };
+    } catch (err) {
+      results.brevo = { success: false, error: err.message };
+    }
+  } else {
+    results.brevo = { skipped: true, reason: 'BREVO_API_KEY / BREVO_FROM_EMAIL not set' };
   }
 
   if (cfg.emailUser && cfg.emailPass) {
