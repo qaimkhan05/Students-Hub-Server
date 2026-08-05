@@ -1,3 +1,4 @@
+const dns = require('dns');
 const nodemailer = require('nodemailer');
 const { Resend } = require('resend');
 
@@ -10,9 +11,52 @@ const log = (...args) => console.error('[MAIL]', ...args);
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 
-const createSmtpTransporter = (emailUser, emailPass) =>
-  nodemailer.createTransport({
-    host: SMTP_HOST,
+// Resolve smtp.gmail.com to an IPv4 literal and pin it as the connect host.
+// Nodemailer's built-in resolver mixes IPv4 and IPv6 and picks randomly;
+// on Railway IPv6 egress is unavailable (ENETUNREACH/ETIMEDOUT), so forcing
+// IPv4 keeps Gmail SMTP reachable. STARTTLS still uses smtp.gmail.com as the
+// TLS servername, so the certificate check stays valid.
+const resolveSmtpIpv4 = () =>
+  new Promise((resolve) => {
+    let done = false;
+    const finish = (address) => {
+      if (!done) {
+        done = true;
+        resolve(address || null);
+      }
+    };
+
+    try {
+      const resolver = new dns.Resolver({ timeout: 5000, tries: 2 });
+      resolver.setServers(['8.8.8.8', '1.1.1.1']);
+      resolver.resolve4(SMTP_HOST, (err, addresses) => {
+        if (!err && addresses && addresses.length) {
+          finish(addresses[0]);
+        } else {
+          finish(null);
+        }
+      });
+    } catch {
+      finish(null);
+    }
+  });
+
+let smtpHostPromise;
+
+const getSmtpHost = async () => {
+  if (!smtpHostPromise) {
+    smtpHostPromise = resolveSmtpIpv4().then((ipv4) => ipv4 || SMTP_HOST);
+  }
+
+  return smtpHostPromise;
+};
+
+const createSmtpTransporter = async (emailUser, emailPass) => {
+  const host = await getSmtpHost();
+
+  return nodemailer.createTransport({
+    host,
+    servername: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
     requireTLS: true,
@@ -23,14 +67,12 @@ const createSmtpTransporter = (emailUser, emailPass) =>
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 20000,
-    socketOptions: {
-      family: 4,
-    },
     tls: {
       servername: SMTP_HOST,
       rejectUnauthorized: false,
     },
   });
+};
 
 const getEmailConfig = () => {
   const emailUser = String(process.env.EMAIL_USER || '').trim();
@@ -87,7 +129,7 @@ const sendWithSmtp = async ({ to, subject, text, html, replyTo }) => {
     throw error;
   }
 
-  const transporter = createSmtpTransporter(emailUser, emailPass);
+  const transporter = await createSmtpTransporter(emailUser, emailPass);
 
   try {
     await transporter.verify();

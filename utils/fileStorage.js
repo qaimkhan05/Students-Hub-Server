@@ -25,6 +25,17 @@ const MIME_EXTENSION_MAP = {
 
 const CLOUDINARY_URL_PATTERN = /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/v\d+\/(.+)$/i;
 
+// Cloudinary free-tier raw uploads cap at 20MB. Larger files fall back to
+// local storage (ephemeral on Railway, but always works for smaller items).
+const CLOUDINARY_MAX_BYTES = 20 * 1024 * 1024;
+
+const isCloudinaryConfigured = () =>
+  Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+  );
+
 const sanitizeBaseName = (fileName = 'file') => {
   const normalized = fileName
     .toLowerCase()
@@ -155,7 +166,12 @@ const saveBase64Upload = async ({
     throw new Error(`${label} must be ${Math.floor(maxBytes / (1024 * 1024))} MB or smaller`);
   }
 
-  if (storage === 'local') {
+  const useLocal =
+    storage === 'local' ||
+    fileBuffer.length > CLOUDINARY_MAX_BYTES ||
+    !isCloudinaryConfigured();
+
+  if (useLocal) {
     return saveBufferToLocal(fileBuffer, { extension, subdirectories });
   }
 
